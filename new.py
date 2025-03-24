@@ -96,4 +96,3 @@ st.dataframe(inactive_filtered[[
     'Source Link'
 ]])
 
-st.markdown("### End of Dashboard")
