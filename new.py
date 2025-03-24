@@ -5,7 +5,6 @@ import numpy as np
 
 @st.cache_data
 def load_data():
-    # Load your Excel file
     df = pd.read_excel('processed_mycme.xlsx')
     return df
 
@@ -25,7 +24,6 @@ faculty_summary = df.groupby('Faculty Name').agg(
 faculty_summary['Still Continuing?'] = faculty_summary['Active_Courses'] > 0
 
 st.title("Faculty Continuing CME Dashboard")
-
 st.markdown("""
 This dashboard shows all faculty members and whether they are **still continuing** their CME 
 (i.e., have at least one course with an expiration date on or after today).
@@ -35,21 +33,22 @@ st.markdown("### Overall Faculty Stats")
 st.write("Total Faculty:", faculty_summary['Faculty Name'].nunique())
 st.write("Faculty Still Continuing:", faculty_summary['Still Continuing?'].sum())
 
+# Create a horizontal bar chart
 fig = px.bar(
     faculty_summary,
-    x='Faculty Name',
-    y='Active_Courses',
+    x='Active_Courses',
+    y='Faculty Name',
+    orientation='h',
     title='Active Courses per Faculty (All Faculty)',
-    labels={'Faculty Name': 'Faculty', 'Active_Courses': 'Count of Active Courses'}
+    labels={'Active_Courses': 'Count of Active Courses', 'Faculty Name': 'Faculty'}
 )
-# Rotate labels and show every faculty name
-fig.update_layout(xaxis_tickangle=-45)
-fig.update_xaxes(dtick=1)
+
+# Force Plotly to display all faculty names on the y-axis
+fig.update_yaxes(dtick=1, autorange='reversed')  # 'autorange' reversed puts the highest bar on top
 
 st.plotly_chart(fig)
 
 st.markdown("### Detailed Faculty View")
-
 all_faculty = ["All"] + list(sorted(faculty_summary['Faculty Name'].unique()))
 chosen_faculty = st.multiselect(
     "Select Faculty (choose one or many, or 'All' to show everyone):",
