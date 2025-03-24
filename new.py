@@ -24,31 +24,12 @@ faculty_summary = df.groupby('Faculty Name').agg(
 faculty_summary['Still Continuing?'] = faculty_summary['Active_Courses'] > 0
 
 st.title("Faculty Continuing CME Dashboard")
+
 st.markdown("""
-This dashboard shows all faculty members and whether they are **still continuing** their CME 
-(i.e., have at least one course with an expiration date on or after today).
+This dashboard shows faculty members and whether they are **still continuing** their CME 
+(i.e., at least one course with an expiration date on or after today).
 """)
 
-st.markdown("### Overall Faculty Stats")
-st.write("Total Faculty:", faculty_summary['Faculty Name'].nunique())
-st.write("Faculty Still Continuing:", faculty_summary['Still Continuing?'].sum())
-
-# Create a horizontal bar chart
-fig = px.bar(
-    faculty_summary,
-    x='Active_Courses',
-    y='Faculty Name',
-    orientation='h',
-    title='Active Courses per Faculty (All Faculty)',
-    labels={'Active_Courses': 'Count of Active Courses', 'Faculty Name': 'Faculty'}
-)
-
-# Force Plotly to display all faculty names on the y-axis
-fig.update_yaxes(dtick=1, autorange='reversed')  # 'autorange' reversed puts the highest bar on top
-
-st.plotly_chart(fig)
-
-st.markdown("### Detailed Faculty View")
 all_faculty = ["All"] + list(sorted(faculty_summary['Faculty Name'].unique()))
 chosen_faculty = st.multiselect(
     "Select Faculty (choose one or many, or 'All' to show everyone):",
@@ -57,18 +38,30 @@ chosen_faculty = st.multiselect(
 )
 
 if "All" in chosen_faculty or len(chosen_faculty) == 0:
-    filtered_faculty = faculty_summary
+    filtered_faculty_summary = faculty_summary
     df_filtered = df
 else:
-    filtered_faculty = faculty_summary[faculty_summary['Faculty Name'].isin(chosen_faculty)]
+    filtered_faculty_summary = faculty_summary[faculty_summary['Faculty Name'].isin(chosen_faculty)]
     df_filtered = df[df['Faculty Name'].isin(chosen_faculty)]
 
-st.write("### Filtered Faculty Summary")
-st.dataframe(filtered_faculty)
+# Create a horizontal bar chart for only the selected faculty
+fig = px.bar(
+    filtered_faculty_summary,
+    x='Active_Courses',
+    y='Faculty Name',
+    orientation='h',
+    title='Active Courses per Faculty (Filtered)',
+    labels={'Active_Courses': 'Count of Active Courses', 'Faculty Name': 'Faculty'}
+)
+fig.update_yaxes(autorange='reversed')  # places highest bar at the top
+st.plotly_chart(fig)
+
+st.markdown("### Filtered Faculty Summary")
+st.dataframe(filtered_faculty_summary)
 
 st.write("""
-Below is a table of all faculty details (and their courses) from the dataset, 
-filtered for the selected faculty (but including both active and inactive courses).
+Below is a table of faculty details (and their courses), 
+filtered by your selection (including both active and inactive courses).
 """)
 st.dataframe(df_filtered[[
     'Faculty Name',
