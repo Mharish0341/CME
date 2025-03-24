@@ -16,11 +16,16 @@ df['course_expires_date'] = pd.to_datetime(df['course_expires_date'], errors='co
 today = pd.Timestamp.today().normalize()
 df['Is Active Course'] = df['course_expires_date'] >= today
 
+# Summaries by faculty
 faculty_summary = df.groupby('Faculty Name').agg(
     Total_Courses=('course_expires_date', 'count'),
     Active_Courses=('Is Active Course', 'sum')
 ).reset_index()
 
+# Inactive is total minus active
+faculty_summary['Inactive_Courses'] = faculty_summary['Total_Courses'] - faculty_summary['Active_Courses']
+
+# Boolean flag for continuing
 faculty_summary['Still Continuing?'] = faculty_summary['Active_Courses'] > 0
 
 st.title("Faculty Continuing CME Dashboard")
@@ -30,7 +35,13 @@ This dashboard shows faculty members and whether they are **still continuing** t
 (i.e., at least one course with an expiration date on or after today).
 """)
 
-all_faculty = ["All"] + list(sorted(faculty_summary['Faculty Name'].unique()))
+# Overall Stats
+st.markdown("### Overall Faculty Stats")
+st.write("Total Faculty:", faculty_summary['Faculty Name'].nunique())
+st.write("Faculty Still Continuing:", faculty_summary['Still Continuing?'].sum())
+
+# MULTISELECT
+all_faculty = ["All"] + sorted(faculty_summary['Faculty Name'].unique())
 chosen_faculty = st.multiselect(
     "Select Faculty (choose one or many, or 'All' to show everyone):",
     options=all_faculty,
@@ -38,30 +49,30 @@ chosen_faculty = st.multiselect(
 )
 
 if "All" in chosen_faculty or len(chosen_faculty) == 0:
-    filtered_faculty_summary = faculty_summary
+    filtered_summary = faculty_summary
     df_filtered = df
 else:
-    filtered_faculty_summary = faculty_summary[faculty_summary['Faculty Name'].isin(chosen_faculty)]
+    filtered_summary = faculty_summary[faculty_summary['Faculty Name'].isin(chosen_faculty)]
     df_filtered = df[df['Faculty Name'].isin(chosen_faculty)]
 
-# Create a horizontal bar chart for only the selected faculty
+# Bar chart for the selected faculty only
 fig = px.bar(
-    filtered_faculty_summary,
+    filtered_summary,
     x='Active_Courses',
     y='Faculty Name',
     orientation='h',
-    title='Active Courses per Faculty (Filtered)',
-    labels={'Active_Courses': 'Count of Active Courses', 'Faculty Name': 'Faculty'}
+    title='Active Courses per Selected Faculty',
+    labels={'Active_Courses': 'Active Courses', 'Faculty Name': 'Faculty'}
 )
-fig.update_yaxes(autorange='reversed')  # places highest bar at the top
+fig.update_yaxes(autorange='reversed')
 st.plotly_chart(fig)
 
 st.markdown("### Filtered Faculty Summary")
-st.dataframe(filtered_faculty_summary)
+st.dataframe(filtered_summary)
 
 st.write("""
-Below is a table of faculty details (and their courses), 
-filtered by your selection (including both active and inactive courses).
+Below is a table of the selected faculty members (and their courses), 
+including both **active** and **inactive** courses (based on their expiration date).
 """)
 st.dataframe(df_filtered[[
     'Faculty Name',
