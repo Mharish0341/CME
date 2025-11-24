@@ -1,36 +1,92 @@
 import time
 import pandas as pd
 from tqdm import tqdm
+import os
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+# File paths
+excel_file = "WAVE 0-PROVIDERS/cme_passport_providers.xlsx"
+links_file = "all_links.txt"
+
 driver = webdriver.Chrome()
 
 url = "https://www.cmepassport.org/activity/search"
 driver.get(url)
 
-# For testing, scrape only the first page
+unique_links = set()
 
-WebDriverWait(driver, 10).until(
-    EC.presence_of_element_located(
-        (By.CSS_SELECTOR, ".LearnerResultCard_learner-results-card-title__G6rw3")
-    )
-)
+# Check if all_links.txt exists; if yes, load from it; else, scrape and save
+if os.path.exists(links_file):
+    print(f"Loading unique links from {links_file}...")
+    with open(links_file, 'r') as f:
+        unique_links = set(line.strip() for line in f if line.strip())
+else:
+    print("Collecting all unique links...")
+    page = 1
+    page_bar = tqdm(desc="Collecting pages", unit="page")
 
-link_elems = driver.find_elements(
-    By.CSS_SELECTOR,
-    ".LearnerResultCard_learner-results-card-title__G6rw3 a"
-)
-links = [link.get_attribute("href") for link in link_elems if link.get_attribute("href")]
+    while True:
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, ".LearnerResultCard_learner-results-card-title__G6rw3")
+            )
+        )
 
-print(f"Activity links found on the first page: {len(links)}")
+        link_elems = driver.find_elements(
+            By.CSS_SELECTOR,
+            ".LearnerResultCard_learner-results-card-title__G6rw3 a"
+        )
+        links = [link.get_attribute("href") for link in link_elems if link.get_attribute("href")]
+        unique_links.update(links)
 
-data = []
+        page_bar.update(1)
 
-for link in tqdm(links, desc="Processing activities from first page"):
+        try:
+            next_button = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, 'button[aria-label="Go to next page"]')
+                )
+            )
+            if "Mui-disabled" not in next_button.get_attribute("class"):
+                driver.execute_script("arguments[0].click();", next_button)
+                time.sleep(3)
+                page += 1
+            else:
+                break
+        except Exception:
+            break
+
+    page_bar.close()
+
+    # Save unique links to file
+    with open(links_file, 'w') as f:
+        for link in unique_links:
+            f.write(f"{link}\n")
+
+print(f"Total unique activity links found: {len(unique_links)}")
+
+# Load existing data from Excel if it exists
+existing_data = []
+scraped_urls = set()
+if os.path.exists(excel_file):
+    print(f"Loading existing data from {excel_file}...")
+    df_existing = pd.read_excel(excel_file)
+    existing_data = df_existing.to_dict('records')
+    scraped_urls = set(df_existing['Activity URL'].dropna().unique())
+    print(f"Already scraped {len(scraped_urls)} activities.")
+
+# Filter unique_links to only those not scraped
+remaining_links = [link for link in unique_links if link not in scraped_urls]
+print(f"Remaining links to scrape: {len(remaining_links)}")
+
+# Now process only remaining links
+data = existing_data[:]  # Start with existing data
+
+for link in tqdm(remaining_links, desc="Processing remaining activities"):
     driver.get(link)
 
     try:
@@ -147,10 +203,16 @@ for link in tqdm(links, desc="Processing activities from first page"):
 
     # Extract Registered for MOC
     try:
-        row["Registered for MOC"] = driver.find_element(
+        moc_elem = driver.find_element(
             By.XPATH,
-            "//div[normalize-space(.)='Registered for MOC']/following-sibling::p//div[contains(@class, 'list')]"
-        ).text.strip()
+            "//div[normalize-space(.)='Registered for MOC']/following-sibling::p"
+        )
+        value = moc_elem.text.strip()
+        if not value or value == "No":
+            row["Registered for MOC"] = value
+        else:
+            list_elem = moc_elem.find_element(By.CSS_SELECTOR, ".ActivityDetail_list__fGln8")
+            row["Registered for MOC"] = list_elem.text.strip()
     except Exception:
         row["Registered for MOC"] = ""
 
@@ -211,9 +273,10 @@ for link in tqdm(links, desc="Processing activities from first page"):
 
     data.append(row)
 
-df = pd.DataFrame(data)
-df.to_excel("cme_passport_first_page.xlsx", index=False)
+    # Save after each scrape to avoid data loss on crash
+    df = pd.DataFrame(data)
+    df.to_excel(excel_file, index=False)
 
 driver.quit()
 
-print("Scraping of first page completed. Data saved to cme_passport_first_page.xlsx")
+print("Scraping completed. Data saved to cme_passport_providers.xlsx")

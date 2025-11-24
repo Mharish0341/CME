@@ -242,8 +242,8 @@ for link in tqdm(list(unique_links), desc="Processing unique activities"):
     data.append(row)
 
     df = pd.DataFrame(data)
-    df.to_excel("cme_passport_activities.xlsx", index=False)
+    df.to_excel("cme_passport_providers.xlsx", index=False)
 
 driver.quit()
 
-print("Scraping completed. Data saved to cme_passport_activities.xlsx")
+print("Scraping completed. Data saved to cme_passport_providers.xlsx")
