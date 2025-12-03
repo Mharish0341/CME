@@ -1,282 +1,349 @@
 import time
-import pandas as pd
+import csv
+import random
+import json
 from tqdm import tqdm
-import os
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+import undetected_chromedriver as uc
 
-# File paths
-excel_file = "WAVE 0-PROVIDERS/cme_passport_providers.xlsx"
-links_file = "all_links.txt"
+# Base URL and Search URL
+BASE_URL = "https://edhub.ama-assn.org"
+SEARCH_URL = "https://edhub.ama-assn.org/jn-learning/by-topic?hd=edhub&f_PublicationYear=2021AND2022AND2023AND2024AND2025&fl_IsDataSupplement=false&page=3"
 
-driver = webdriver.Chrome()
+# CSV File
+CSV_FILE = "WAVE 1-Activities/ama_articles.csv"
 
-url = "https://www.cmepassport.org/activity/search"
-driver.get(url)
+# Initialize CSV file with headers (DOI column removed, added Type, Audio Link, Video Link)
+with open(CSV_FILE, "w", newline="", encoding="utf-8") as file:
+    writer = csv.writer(file)
+    writer.writerow([
+        "Authors", "Title", "Subtitle", "Topic", "Content", "Source Link", "Type", "Audio Link", "Video Link",
+        "Accepted for Publication", "Published", "Open Access",
+        "Corresponding Author", "Author Contributions",
+        "Conflict of Interest Disclosures", "Funding/Support",
+        "Role of the Funder/Sponsor", "Additional Contributions",
+        "Publisher", "Event Date"
+    ])
 
-unique_links = set()
 
-# Check if all_links.txt exists; if yes, load from it; else, scrape and save
-if os.path.exists(links_file):
-    print(f"Loading unique links from {links_file}...")
-    with open(links_file, 'r') as f:
-        unique_links = set(line.strip() for line in f if line.strip())
-else:
-    print("Collecting all unique links...")
-    page = 1
-    page_bar = tqdm(desc="Collecting pages", unit="page")
+# Function to Setup Chrome Driver
+def setup_driver():
+    """Initialize the Selenium Chrome WebDriver."""
+    ua = UserAgent()
+    options = webdriver.ChromeOptions()
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--incognito")
+    options.add_argument(f"user-agent={ua.random}")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    # Let undetected_chromedriver auto-detect the binary/version
+    return uc.Chrome(options=options)
 
-    while True:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, ".LearnerResultCard_learner-results-card-title__G6rw3")
-            )
-        )
 
-        link_elems = driver.find_elements(
-            By.CSS_SELECTOR,
-            ".LearnerResultCard_learner-results-card-title__G6rw3 a"
-        )
-        links = [link.get_attribute("href") for link in link_elems if link.get_attribute("href")]
-        unique_links.update(links)
+def extract_metadata_field(soup, label):
+    p_tags = soup.find_all("p")
+    for p in p_tags:
+        strong = p.find("strong")
+        if strong and label in strong.get_text():
+            full_text = p.get_text(separator=" ", strip=True)
+            return full_text.replace(strong.get_text(), "").strip()
+    return ""
 
-        page_bar.update(1)
 
+def extract_publisher(soup):
+    container = soup.find("div", class_="cme-label article-source-and-date")
+    publisher = ""
+    if container:
+        publisher_div = container.find("div", class_="publisher")
+        if publisher_div:
+            publisher = publisher_div.get_text(strip=True)
+    # Fallback: try JSON-LD
+    if not publisher:
+        ld_json = soup.find("script", type="application/ld+json")
+        if ld_json and ld_json.string:
+            try:
+                ld_data = json.loads(ld_json.string)
+                if isinstance(ld_data, list):
+                    ld_data = ld_data[0]
+                if "publisher" in ld_data and isinstance(ld_data["publisher"], dict):
+                    publisher = ld_data["publisher"].get("name", "")
+            except Exception:
+                pass
+    return publisher
+
+
+def extract_event_date(soup):
+    container = soup.find("div", class_="cme-label article-source-and-date")
+    if container:
+        divs = container.find_all("div")
+        for d in divs:
+            text = d.get_text(strip=True)
+            if text.startswith("Event Date:"):
+                return text.replace("Event Date:", "").strip()
+    return ""
+
+
+# Modified: reuse the same driver instance (do NOT create/quit inside this function)
+def scrape_article_details(driver, article_url, article_type):
+    """Extract detailed information from a given article page using an existing driver."""
+    try:
+        driver.get(article_url)
+        # Wait for a recognizable element on the article page (title) or just body as fallback
         try:
-            next_button = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, 'button[aria-label="Go to next page"]')
-                )
+            WebDriverWait(driver, 12).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "h1.content-title, div.content-authors, #view-content-tab"))
             )
-            if "Mui-disabled" not in next_button.get_attribute("class"):
-                driver.execute_script("arguments[0].click();", next_button)
-                time.sleep(3)
-                page += 1
-            else:
-                break
         except Exception:
+            # fallback small sleep if element detection fails
+            time.sleep(random.uniform(3, 5))
+
+        # Allow dynamic content to load
+        time.sleep(random.uniform(1.5, 3.5))
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        def extract_text(tag, class_name):
+            element = soup.find(tag, class_=class_name)
+            return element.get_text(strip=True) if element else ""
+
+        # --- Authors extraction with new layout handling ---
+        authors = ""
+        authors_div = soup.find("div", class_="content-authors")
+        authors_list = []
+        if authors_div:
+            authors_tag = authors_div.find("div", class_="cme-label authors")
+            if not authors_tag:
+                authors_tag = authors_div.find("div", class_="cme-label authors-limited")
+            if authors_tag:
+                for a in authors_tag.find_all("a"):
+                    text = a.get_text(strip=True)
+                    if text.lower() == "et al":
+                        continue
+                    authors_list.append(text.replace("\xa0", " "))
+            remaining = authors_div.find("div", class_="js-authors-remaining")
+            if remaining:
+                for a in remaining.find_all("a"):
+                    text = a.get_text(strip=True)
+                    authors_list.append(text.replace("\xa0", " "))
+            authors = ", ".join(authors_list)
+        # Fallback: JSON-LD
+        if not authors:
+            ld_json = soup.find("script", type="application/ld+json")
+            if ld_json and ld_json.string:
+                try:
+                    ld_data = json.loads(ld_json.string)
+                    if isinstance(ld_data, list):
+                        ld_data = ld_data[0]
+                    author_field = ld_data.get("author", "")
+                    if isinstance(author_field, dict):
+                        authors = author_field.get("name", "")
+                    else:
+                        authors = author_field
+                except Exception:
+                    pass
+
+        title = extract_text("h1", "content-title")
+        subtitle = extract_text("span", "subtitle")
+        topic = extract_text("a", "cme-label category-name")
+
+        # Content extraction using conditional logic
+        content = ""
+        view_content = soup.find("div", id="view-content-tab")
+        if view_content:
+            legend_section = view_content.find("div", class_="section-type-multimedialegend")
+            if legend_section:
+                content = " ".join([p.get_text(strip=True) for p in legend_section.find_all("p")])
+                for ul in legend_section.find_all("ul"):
+                    content += " " + " ".join([li.get_text(strip=True) for li in ul.find_all("p")])
+            else:
+                content = " ".join([p.get_text(strip=True) for p in view_content.find_all("p")])
+        else:
+            content = " ".join([p.get_text(strip=True) for p in soup.find_all("p")])
+
+        accepted_for_publication = extract_metadata_field(soup, "Accepted for Publication:")
+        published_raw = extract_metadata_field(soup, "Published Online:")
+        published = published_raw.split("doi:")[0].strip() if "doi:" in published_raw else published_raw.strip()
+        if not published:
+            ld_json = soup.find("script", type="application/ld+json")
+            if ld_json and ld_json.string:
+                try:
+                    ld_data = json.loads(ld_json.string)
+                    if isinstance(ld_data, list):
+                        ld_data = ld_data[0]
+                    published = ld_data.get("datePublished", "")
+                except Exception:
+                    pass
+
+        open_access = extract_metadata_field(soup, "Open Access:")
+        corresponding_author = extract_metadata_field(soup, "Corresponding Author:")
+        author_contributions = extract_metadata_field(soup, "Author Contributions:")
+        conflict_of_interest = extract_metadata_field(soup, "Conflict of Interest Disclosures:")
+        funding_support = extract_metadata_field(soup, "Funding/Support:")
+        role_of_funder = extract_metadata_field(soup, "Role of the Funder/Sponsor:")
+        additional_contributions = extract_metadata_field(soup, "Additional Contributions:")
+
+        publisher = extract_publisher(soup)
+        event_date = extract_event_date(soup)
+
+        # Extract audio link
+        audio_link = ""
+        audio_elem = soup.find("audio", {"class": "js-audio-player"})
+        if audio_elem:
+            audio_link = audio_elem.get("src", "")
+
+        # Extract video link
+        video_link = ""
+        cadmore_div = soup.find("div", {"class": "cadmore-player-wrap"})
+        if cadmore_div:
+            iframe = cadmore_div.find("iframe")
+            if iframe:
+                video_link = iframe.get("src", "")
+
+        if not video_link:
+            video_container = soup.find("div", class_="video-container")
+            if video_container:
+                hls_source = video_container.find("source", type="application/x-mpegURL")
+                if hls_source:
+                    video_link = hls_source.get("src", "")
+                else:
+                    source = video_container.find("source")
+                    if source:
+                        video_link = source.get("src", "")
+
+        return [
+            authors, title, subtitle, topic, content, article_url,
+            article_type, audio_link, video_link,
+            accepted_for_publication, published, open_access,
+            corresponding_author, author_contributions,
+            conflict_of_interest, funding_support,
+            role_of_funder, additional_contributions,
+            publisher, event_date
+        ]
+    except Exception as e:
+        print(f"❌ ERROR scraping {article_url}: {e}")
+        return ["" for _ in range(19)]
+
+
+# Modified: accept driver parameter and reuse it for pagination/link extraction
+def load_all_article_links(driver):
+    """Extract article links from multiple pages using the provided logged-in driver."""
+    print("🔍 Loading AMA EdHub Neurology page...")
+    driver.get(SEARCH_URL)
+    # Let page and JS load
+    time.sleep(4)
+
+    # Let user manually log in and apply filters
+    input("👉 Please log in (if needed) and apply any filters on the site in the opened browser. When ready, press Enter to continue...")
+
+    articles = []
+
+    def extract_links():
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        search_results = soup.find_all("li", class_="search-result")
+        new_articles = []
+        for li in search_results:
+            content_div = li.find("div", class_="search-result--content")
+            if not content_div:
+                continue
+            title_a = content_div.find("a", class_="search-result--title")
+            if not title_a:
+                continue
+            href = title_a.get("href")
+            if not href:
+                continue
+            full_url = href if href.startswith("http") else BASE_URL + href
+            if any(a["url"] == full_url for a in articles):
+                continue  # Skip duplicate
+
+            # Type detection using icons and path
+            type_ = "Other"
+            icons = content_div.find_all("icon")
+            icon_classes = []
+            for icon in icons:
+                classes = icon.get("class", [])
+                if isinstance(classes, list):
+                    icon_classes.extend(classes)
+                else:
+                    icon_classes.append(classes)
+            has_audio = "icon-Content-Audio" in icon_classes
+            has_video = "icon-Content-Video" in icon_classes
+            has_event = "icon-Content-Event" in icon_classes
+            has_interactive = "icon-Content-Interactive-Module" in icon_classes
+
+            if has_audio or "audio-player" in href:
+                type_ = "Audio"
+            elif has_video or "video-player" in href:
+                type_ = "Video"
+            elif has_event:
+                type_ = "Event"
+            elif has_interactive or "interactive" in href:
+                type_ = "Interactive"
+            elif "module/" in href or "provider-referrer/" in href:
+                type_ = "Module"
+
+            new_articles.append({"url": full_url, "type": type_})
+        return new_articles
+
+    # Initial page extraction
+    new_articles = extract_links()
+    articles.extend(new_articles)
+    print(f"✅ Page 1: Extracted {len(articles)} article links.")
+
+    # Pagination loop using Next button
+    page = 1
+    while True:
+        try:
+            next_button = WebDriverWait(driver, 8).until(
+                EC.element_to_be_clickable((By.CLASS_NAME, "page-next"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+            time.sleep(random.uniform(1.5, 3.0))
+            driver.execute_script("arguments[0].click();", next_button)
+            print(f"🔄 Navigating to page {page + 1}...")
+            time.sleep(random.uniform(4.5, 7.0))
+            new_articles = extract_links()
+            articles.extend(new_articles)
+            page += 1
+            print(f"✅ Page {page}: Total articles found: {len(articles)}")
+        except Exception as e:
+            print(f"❌ No more pages or error: {e}")
             break
 
-    page_bar.close()
+    # Deduplicate by URL just in case
+    unique = {}
+    for a in articles:
+        unique[a["url"]] = a
+    final_list = list(unique.values())
 
-    # Save unique links to file
-    with open(links_file, 'w') as f:
-        for link in unique_links:
-            f.write(f"{link}\n")
+    print(f"✅ Total unique article links extracted: {len(final_list)}")
+    return final_list
 
-print(f"Total unique activity links found: {len(unique_links)}")
 
-# Load existing data from Excel if it exists
-existing_data = []
-scraped_urls = set()
-if os.path.exists(excel_file):
-    print(f"Loading existing data from {excel_file}...")
-    df_existing = pd.read_excel(excel_file)
-    existing_data = df_existing.to_dict('records')
-    scraped_urls = set(df_existing['Activity URL'].dropna().unique())
-    print(f"Already scraped {len(scraped_urls)} activities.")
-
-# Filter unique_links to only those not scraped
-remaining_links = [link for link in unique_links if link not in scraped_urls]
-print(f"Remaining links to scrape: {len(remaining_links)}")
-
-# Now process only remaining links
-data = existing_data[:]  # Start with existing data
-
-for link in tqdm(remaining_links, desc="Processing remaining activities"):
-    driver.get(link)
+if __name__ == "__main__":
+    driver = setup_driver()
 
     try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "h4.ActivityDetail_detail-title__b9NVs")
-            )
-        )
-    except Exception:
-        continue
+        # Load links using the same driver (allows manual login)
+        articles = load_all_article_links(driver)
 
-    row = {
-        "Source URL": url,
-        "Activity URL": link
-    }
+        # Scrape each article using the same logged-in driver
+        with open(CSV_FILE, "a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            for art in tqdm(articles, desc="Scraping articles"):
+                # small random delay between article visits to reduce detection
+                time.sleep(random.uniform(1.0, 2.5))
+                article_data = scrape_article_details(driver, art["url"], art["type"])
+                writer.writerow(article_data)
 
-    # Extract Title
-    try:
-        row["Title"] = driver.find_element(By.CSS_SELECTOR, "h4.ActivityDetail_detail-title__b9NVs").text.strip()
-    except Exception:
-        row["Title"] = ""
-
-    # Extract Accredited Provider
-    try:
-        row["Accredited Provider"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Accredited Provider']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Accredited Provider"] = ""
-
-    # Extract Activity Link
-    try:
-        row["Activity Link"] = driver.find_element(
-            By.CSS_SELECTOR,
-            "a.ActivityDetail_activity-url__QOEM9"
-        ).get_attribute("href")
-    except Exception:
-        row["Activity Link"] = ""
-
-    # Extract About this Activity
-    try:
-        row["About this Activity"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='About this Activity']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["About this Activity"] = ""
-
-    # Extract Registration
-    try:
-        row["Registration"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Registration']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Registration"] = ""
-
-    # Extract Fee to Participate
-    try:
-        row["Fee to Participate"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Fee to Participate']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Fee to Participate"] = ""
-
-    # Extract Activity Type
-    try:
-        row["Activity Type"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Activity Type']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Activity Type"] = ""
-
-    # Extract Start and End Dates
-    try:
-        row["Start and End Dates"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Start and End Dates']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Start and End Dates"] = ""
-
-    # Extract Location
-    try:
-        row["Location"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Location']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Location"] = ""
-
-    # Extract AMA PRA Category 1 Credit™️
-    try:
-        row["AMA PRA Category 1 Credit™️"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='AMA PRA Category 1 Credit™️']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["AMA PRA Category 1 Credit™️"] = ""
-
-    # Extract Specialties
-    try:
-        specialties_lis = driver.find_elements(
-            By.XPATH,
-            "//section[h5[normalize-space(.)='Specialties']]//li"
-        )
-        specs = [li.text.strip() for li in specialties_lis if li.text.strip()]
-        row["Specialties"] = ", ".join(specs)
-    except Exception:
-        row["Specialties"] = ""
-
-    # Extract Registered for MOC
-    try:
-        moc_elem = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Registered for MOC']/following-sibling::p"
-        )
-        value = moc_elem.text.strip()
-        if not value or value == "No":
-            row["Registered for MOC"] = value
-        else:
-            list_elem = moc_elem.find_element(By.CSS_SELECTOR, ".ActivityDetail_list__fGln8")
-            row["Registered for MOC"] = list_elem.text.strip()
-    except Exception:
-        row["Registered for MOC"] = ""
-
-    # Extract FDA REMS
-    try:
-        row["FDA REMS"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='FDA REMS']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["FDA REMS"] = ""
-
-    # Extract Qualifies for MIPS
-    try:
-        row["Qualifies for MIPS"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Qualifies for MIPS']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Qualifies for MIPS"] = ""
-
-    # Extract Content Outlines
-    try:
-        content_outlines = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Content Outlines']/following-sibling::*"
-        ).text.strip() or "None"
-        row["Content Outlines"] = content_outlines
-    except Exception:
-        row["Content Outlines"] = "None"
-
-    # Extract Providership
-    try:
-        row["Providership"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Providership']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Providership"] = ""
-
-    # Extract Measured Outcomes
-    try:
-        row["Measured Outcomes"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Measured Outcomes']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Measured Outcomes"] = ""
-
-    # Extract Commercial Support
-    try:
-        row["Commercial Support"] = driver.find_element(
-            By.XPATH,
-            "//div[normalize-space(.)='Commercial Support']/following-sibling::p"
-        ).text.strip()
-    except Exception:
-        row["Commercial Support"] = ""
-
-    data.append(row)
-
-    # Save after each scrape to avoid data loss on crash
-    df = pd.DataFrame(data)
-    df.to_excel(excel_file, index=False)
-
-driver.quit()
-
-print("Scraping completed. Data saved to cme_passport_providers.xlsx")
+        print("✅ Scraping completed. Data saved to CSV.")
+    finally:
+        # Ensure driver quits when finished or on exception
+        try:
+            driver.quit()
+        except Exception:
+            pass

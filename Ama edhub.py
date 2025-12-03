@@ -4,7 +4,6 @@ import random
 import json
 from tqdm import tqdm
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -12,15 +11,12 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 import undetected_chromedriver as uc
 
-# Set Chrome Driver Path
-CHROME_DRIVER_PATH = r"C:\Users\M.HARISH\Documents\chrome driver\chromedriver-win64\chromedriver.exe"
-
 # Base URL and Search URL
 BASE_URL = "https://edhub.ama-assn.org"
 SEARCH_URL = "https://edhub.ama-assn.org/collections/5777/neurology"
 
 # CSV File
-CSV_FILE = "ama_articles.csv"
+CSV_FILE = "WAVE 1-Activities/ama_articles.csv"
 
 # Initialize CSV file with headers (DOI column removed)
 with open(CSV_FILE, "w", newline="", encoding="utf-8") as file:
@@ -45,8 +41,8 @@ def setup_driver():
     options.add_argument("--incognito")
     options.add_argument(f"user-agent={ua.random}")
     options.add_argument("--disable-blink-features=AutomationControlled")
-    # Specify version_main=133 to match your current Chrome version.
-    return uc.Chrome(version_main=133, service=Service(CHROME_DRIVER_PATH), options=options)
+    # Remove hardcoded version_main; let undetected_chromedriver auto-detect
+    return uc.Chrome(options=options)
 
 
 def extract_metadata_field(soup, label):
@@ -235,7 +231,7 @@ def load_all_article_links():
     extract_links()
     print(f"✅ Page 1: Extracted {len(article_links)} article links.")
 
-    for page in tqdm(range(2, 16), desc="Extracting pages"):
+    for page in tqdm(range(2, 54), desc="Extracting pages"):
         try:
             pagination_xpath = f"//a[contains(@class, 'page-number') and text()='{page}']"
             next_page_element = WebDriverWait(driver, 300).until(
