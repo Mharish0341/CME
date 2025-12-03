@@ -164,7 +164,7 @@ def extract_course_details(driver, course_url):
 
     return course_info, faculty_items
 
-def main(save_csv="courses_faculty.csv", save_xlsx="courses_faculty.xlsx", headless=True):
+def main(save_csv="courses_faculty.csv", save_xlsx="Primed_courses_faculty.xlsx", headless=True):
     driver = setup_driver(headless=headless)
     try:
         driver.get(START_URL)
